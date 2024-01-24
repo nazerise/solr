@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kill-solr
+  namespace: {{ .Release.Namespace | quote }}
+  labels: {{- include "common.labels.standard" ( dict "customLabels" .Values.commonLabels "context" $ ) | nindent 4 }}
+    app.kubernetes.io/component: solr
+  {{- if .Values.commonAnnotations }}
+  annotations: {{- include "common.tplvalues.render" ( dict "value" .Values.commonAnnotations "context" $ ) | nindent 4 }}
+  {{- end }}
+data:
+  kill-solr.sh: |-
+    #!/bin/bash
+    SOLR_PID=$(ps aux | grep 8983 | grep -v grep | awk '{print $2}')
+    SOLR_JAVA_HOME=$JAVA_HOME
+    DIR="/opt/bitnami/solr/server"
+    STOP_KEY="solrrocks"
+    SOLR_PID_DIR="/opt/bitnami/solr/tmp"
+    JAVA="$JAVA_HOME/bin/java"
+    JSTACK="$JAVA_HOME/bin/jstack"
+    JATTACH="$(command -v jattach)"
+    stop_solr() {
+      DIR="$1"
+      SOLR_PORT="$2"
+      THIS_STOP_PORT="${STOP_PORT:-$((SOLR_PORT - 1000))}"
+      STOP_KEY="$3"
+      SOLR_PID="$4"
+    
+      if [ -n "$SOLR_PID"  ]; then
+        echo $SOLR_PID
+        echo -e "Sending stop command to Solr running on port $SOLR_PORT ... waiting up to $SOLR_STOP_WAIT seconds to allow Jetty process $SOLR_PID to stop gracefully."
+        # shellcheck disable=SC2086
+        /opt/bitnami/java/bin/java  -jar /opt/bitnami/solr/server/start.jar STOP.PORT=8983 STOP.KEY=solrrocks --stop || true
+          (loops=0
+          while true
+          do
+            # Check if a process is running with the specified PID.
+            # -o stat will output the STAT, where Z indicates a zombie
+            # stat='' removes the header (--no-headers isn't supported on all platforms)
+            # Note the space after '$('. It is needed to avoid confusion with special bash eval syntax
+            STAT=$( (ps -o stat='' -p "$SOLR_PID" || :) | tr -d ' ')
+            if [[ "${STAT:-Z}" != "Z" ]]; then
+              slept=$((loops * 2))
+              if [ $slept -lt $SOLR_STOP_WAIT ]; then
+                sleep 2
+                loops=$((loops+1))
+              else
+                exit # subshell!
+              fi
+            else
+              exit # subshell!
+            fi
+          done) &
+        rm -f "$SOLR_PID_DIR/solr-$SOLR_PORT.pid"
+      else
+        echo -e "No Solr nodes found to stop."
+        exit 0
+      fi
+    
+      # Note the space after '$('. It is needed to avoid confusion with special bash eval syntax
+      STAT=$( (ps -o stat='' -p "$SOLR_PID" || :) | tr -d ' ')
+      if [[ "${STAT:-Z}" != "Z" ]]; then
+        if [ -n "${JSTACK:-}" ]; then
+          echo -e "Solr process $SOLR_PID is still running; jstacking it now."
+          $JSTACK "$SOLR_PID"
+        elif [ "$JATTACH" != "" ]; then
+          echo -e "Solr process $SOLR_PID is still running; jattach threaddumping it now."
+          $JATTACH "$SOLR_PID" threaddump
+        fi
+        echo -e "Solr process $SOLR_PID is still running; forcefully killing it now."
+        kill -9 "$SOLR_PID"
+        echo "Killed process $SOLR_PID"
+        rm -f "$SOLR_PID_DIR/solr-$SOLR_PORT.pid"
+        sleep 10
+      fi
+    
+      # Note the space after '$('. It is needed to avoid confusion with special bash eval syntax
+      STAT=$( (ps -o stat='' -p "$SOLR_PID" || :) | tr -d ' ')
+      if [ "${STAT:-}" == "Z" ]; then
+        # This can happen if, for example, you are running Solr inside a docker container with multiple processes
+        # rather than running it is as the only service. The --init flag on docker avoids that particular problem.
+        echo -e "Solr process $SOLR_PID has terminated abnormally. Solr has exited but a zombie process entry remains."
+        exit 1
+      elif [ -n "${STAT:-}" ]; then
+        echo "ERROR: Failed to kill previous Solr Java process $SOLR_PID ... script fails."
+        exit 1
+      fi
+    } # end stop_solr
+    
+    stop_solr stop_solr $DIR $SOLR_PORT_NUMBER $STOP_KEY $SOLR_PID
