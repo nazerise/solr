@@ -87,4 +87,4 @@ data:
       fi
     } # end stop_solr
     
-    stop_solr stop_solr $DIR $SOLR_PORT_NUMBER $STOP_KEY $SOLR_PID
+    stop_solr $DIR $SOLR_PORT_NUMBER $STOP_KEY $SOLR_PID
